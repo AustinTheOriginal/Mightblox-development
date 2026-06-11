@@ -144,9 +144,12 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; font-fami
     <h1>💀 You Died</h1>
     <button id="respawn">Respawn</button>
   </div>
-  <div id="resumePrompt" style="position:absolute;inset:0;background:rgba(0,0,0,0.55);display:none;align-items:center;justify-content:center;flex-direction:column;pointer-events:auto;cursor:pointer;">
-    <h1 style="color:#fff;font-size:30px;text-shadow:2px 2px #000;margin-bottom:10px;">⏸ Paused</h1>
-    <p style="color:#ddd;font-size:15px;text-shadow:1px 1px #000;">Click to resume &amp; lock the mouse</p>
+  <div id="pauseMenu" style="position:absolute;inset:0;background:rgba(0,0,0,0.60);display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;pointer-events:auto;z-index:150;">
+    <h1 style="color:#fff;font-size:32px;text-shadow:3px 3px #000;margin-bottom:6px;letter-spacing:2px;">⏸ Game Menu</h1>
+    <p style="color:#aaa;font-size:12px;text-shadow:1px 1px #000;margin-bottom:4px;">Game continues for other players</p>
+    <button id="pause-resume" style="padding:13px 40px;background:#4a7a20;border:3px solid #6aba30;color:#fff;font-size:16px;cursor:pointer;font-family:'Courier New',monospace;letter-spacing:1px;width:220px;">▶ Resume</button>
+    <button id="pause-leave" style="padding:13px 40px;background:#5a1a1a;border:3px solid #a03030;color:#fff;font-size:15px;cursor:pointer;font-family:'Courier New',monospace;letter-spacing:1px;width:220px;">✕ Leave to Menu</button>
+    <p style="color:#555;font-size:11px;margin-top:4px;">Press ESC or click Resume to go back</p>
   </div>
 </div>
 
@@ -188,6 +191,12 @@ function initAbly(apiKey, onReady, onError) {
       // presence
       ablyChannel.presence.enter({ name: myName });
       multiplayerActive = true;
+      // announce ourselves immediately so existing players know we joined
+      ablyChannel.publish('hello', {
+        id: myId, name: myName,
+        x: WX/2, y: 11, z: WZ/2,
+        yaw: 0, pitch: 0, hp: 20, kit: null, dead: false, shield: false
+      });
       onReady();
     });
     ablyClient.connection.on('failed', function(err) { onError(err); });
@@ -251,10 +260,17 @@ function publishTNTExplode(x, y, z) {
 
 function onAblyMessage(msg) {
   var d = msg.data;
-  if (!d || d.id === myId) return; // ignore own messages
+  if (!d) return;
+  // filter own messages by both the embedded id and the Ably clientId
+  if (d.id === myId) return;
+  if (msg.clientId && msg.clientId === myId) return;
 
   if (msg.name === 'state') {
     updateRemotePlayer(d);
+  } else if (msg.name === 'hello') {
+    // someone just joined — immediately broadcast our state so they can see us
+    publishState();
+    updateRemotePlayer(d); // treat as a state update too (contains same fields)
   } else if (msg.name === 'attack') {
     handleRemoteAttack(d);
   } else if (msg.name === 'arrow') {
@@ -302,16 +318,18 @@ function makeRemoteMesh(name, kit) {
 }
 
 function updateRemotePlayer(d) {
-  if (!running) return;
+  // NOTE: intentionally does NOT gate on `running` — messages can arrive before game starts
+  // and we buffer them so the player appears immediately when game loads
+  if (!d || !d.id) return;
   var rp = remotePlayers[d.id];
   if (!rp) {
     var meshData = makeRemoteMesh(d.name || d.id, d.kit);
     remotePlayers[d.id] = {
       grp: meshData.grp, body: meshData.body,
-      x: d.x, y: d.y, z: d.z,
-      tx: d.x, ty: d.y, tz: d.z, // target positions for interpolation
-      yaw: d.yaw, pitch: d.pitch,
-      hp: d.hp, kit: d.kit, dead: d.dead,
+      x: d.x || WX/2, y: d.y || 11, z: d.z || WZ/2,
+      tx: d.x || WX/2, ty: d.y || 11, tz: d.z || WZ/2,
+      yaw: d.yaw || 0, pitch: d.pitch || 0,
+      hp: d.hp || 20, kit: d.kit, dead: d.dead || false,
       name: d.name || d.id,
       shield: d.shield || false,
       lastSeen: Date.now()
@@ -320,14 +338,14 @@ function updateRemotePlayer(d) {
     updateOnlineCount();
   }
   // set targets for lerp interpolation
-  rp.tx = d.x; rp.ty = d.y; rp.tz = d.z;
-  rp.yaw = d.yaw;
-  rp.hp = d.hp;
-  rp.kit = d.kit;
-  rp.dead = d.dead;
+  if (d.x !== undefined) { rp.tx = d.x; rp.ty = d.y; rp.tz = d.z; }
+  if (d.yaw !== undefined) rp.yaw = d.yaw;
+  if (d.hp !== undefined) rp.hp = d.hp;
+  if (d.kit !== undefined) rp.kit = d.kit;
+  if (d.dead !== undefined) rp.dead = d.dead;
   rp.shield = d.shield || false;
   rp.lastSeen = Date.now();
-  rp.grp.visible = !d.dead;
+  rp.grp.visible = !rp.dead;
 }
 
 function handleRemoteAttack(d) {
@@ -512,6 +530,7 @@ var keys = {};
 var joy = {x:0, y:0};
 function clearKeys(){ for(var k in keys) keys[k]=false; player.mining=false; player.using=false; }
 document.addEventListener('keydown',function(e){ if(!running)return; keys[e.code]=true;
+  if(pauseMenuOpen) return; // block all game keys while pause menu open
   if(e.code==='KeyK')toggleKit(); if(e.code==='KeyH')toggleHelp(); if(e.code==='KeyE')eatSteak();
   if(e.code.indexOf('Digit')===0){ var n=parseInt(e.code.slice(5))-1; if(n>=0&&n<5){player.slot=n;updateHotbar();} }
   if(['Space','KeyW','KeyA','KeyS','KeyD','ShiftLeft'].indexOf(e.code)>=0)e.preventDefault(); });
@@ -519,15 +538,31 @@ document.addEventListener('keyup',function(e){ keys[e.code]=false; });
 window.addEventListener('blur', clearKeys);
 document.addEventListener('visibilitychange',function(){ if(document.hidden)clearKeys(); });
 var locked = false;
-function lockMouse(){ try{ if(!locked && glCanvas.requestPointerLock) glCanvas.requestPointerLock(); }catch(e){} }
+var pauseMenuOpen = false;
+var suppressNextLockChange = false; // set true before intentional exitPointerLock calls
+
+function lockMouse(){
+  try{ if(!locked && glCanvas.requestPointerLock) glCanvas.requestPointerLock(); }catch(e){}
+}
 function applyLook(dx,dy){ var s=0.0025; player.yaw-=dx*s; player.pitch-=dy*s; var lim=Math.PI/2-0.05; if(player.pitch>lim)player.pitch=lim; if(player.pitch<-lim)player.pitch=-lim; }
+
+// drag-look: only active when pointer lock is genuinely unavailable (e.g. iframe)
 var dragLook=false, dragX=0, dragY=0;
-document.addEventListener('mousemove',function(e){ if(!running||panelOpen()||player.dead)return;
+var lockSupported = !!(glCanvas.requestPointerLock);
+
+document.addEventListener('mousemove',function(e){ if(!running||panelOpen()||pauseMenuOpen||player.dead)return;
   if(locked){ applyLook(e.movementX||0, e.movementY||0); }
   else if(dragLook){ applyLook((e.clientX-dragX)*1.2,(e.clientY-dragY)*1.2); dragX=e.clientX; dragY=e.clientY; } });
+
 document.addEventListener('mousedown',function(e){
-  if(!running||panelOpen()||player.dead)return;
-  if(!locked){ lockMouse(); dragLook=true; dragX=e.clientX; dragY=e.clientY; }
+  if(!running||player.dead)return;
+  // if pause menu is open, let its own buttons handle clicks
+  if(pauseMenuOpen) return;
+  if(panelOpen()) return;
+  if(!locked){
+    lockMouse();
+    if(!lockSupported){ dragLook=true; dragX=e.clientX; dragY=e.clientY; }
+  }
   var it=curItem();
   if(e.button===0){
     if(it==='bow'){ player.bowCharging=true; player.bowCharge=0; }
@@ -538,19 +573,79 @@ document.addEventListener('mousedown',function(e){
 document.addEventListener('mouseup',function(e){
   if(e.button===0){ player.mining=false; if(player.bowCharging){fireBow();player.bowCharging=false;} }
   if(e.button===2){ player.using=false; }
-  dragLook=false;
+  if(!lockSupported) dragLook=false;
 });
 document.addEventListener('contextmenu',function(e){e.preventDefault();});
-document.addEventListener('pointerlockchange',function(){ locked=(document.pointerLockElement===glCanvas);
-  var rp=document.getElementById('resumePrompt'); if(rp) rp.style.display='none'; });
-document.addEventListener('wheel',function(e){ if(!running||panelOpen())return; player.slot=(player.slot+(e.deltaY>0?1:-1)+5)%5; updateHotbar(); e.preventDefault(); },{passive:false});
+
+// Pointer lock change: when browser releases lock (ESC press triggers this first)
+document.addEventListener('pointerlockchange',function(){
+  locked=(document.pointerLockElement===glCanvas);
+  if(!locked && running && !panelOpen()){
+    if(suppressNextLockChange){ suppressNextLockChange=false; return; }
+    // Browser released the lock — show pause menu
+    openPauseMenu();
+  }
+});
+
+// ESC key: open/close pause menu (browser also releases pointer lock, handled above)
+document.addEventListener('keydown',function(e){
+  if(e.code==='Escape' && running){
+    if(pauseMenuOpen){ closePauseMenu(); }
+    // else: browser will fire pointerlockchange which calls openPauseMenu
+  }
+},{capture:true});
+
+function openPauseMenu(){
+  if(pauseMenuOpen) return;
+  pauseMenuOpen=true;
+  clearKeys();
+  var pm=document.getElementById('pauseMenu');
+  pm.style.display='flex';
+}
+function closePauseMenu(){
+  if(!pauseMenuOpen) return;
+  pauseMenuOpen=false;
+  document.getElementById('pauseMenu').style.display='none';
+  lockMouse();
+}
+function leaveToMenu(){
+  pauseMenuOpen=false;
+  document.getElementById('pauseMenu').style.display='none';
+  running=false;
+  clearKeys();
+  // clean up multiplayer presence
+  if(ablyChannel){ try{ ablyChannel.presence.leave(); }catch(ex){} }
+  // reset player state visually
+  player.dead=false; player.hp=20; player.hunger=20;
+  player.x=WX/2; player.y=12; player.z=WZ/2; player.vy=0;
+  player.kit=null; player.inv=[]; player.totems=0; player.golden=0;
+  document.getElementById('kit-indicator').textContent='No Kit Selected';
+  document.getElementById('death').style.display='none';
+  document.getElementById('online-indicator').textContent='Solo';
+  for(var _i=tnts.length-1;_i>=0;_i--)scene.remove(tnts[_i].mesh); tnts=[];
+  for(var _j=arrows.length-1;_j>=0;_j--)scene.remove(arrows[_j].mesh); arrows=[];
+  // remove remote player meshes
+  var rpIds=Object.keys(remotePlayers);
+  for(var _k=0;_k<rpIds.length;_k++){ scene.remove(remotePlayers[rpIds[_k]].grp); }
+  remotePlayers={};
+  updateHearts(); updateHotbar();
+  document.getElementById('ably-key').value='';
+  document.getElementById('lobby-status').textContent='';
+  document.getElementById('play').disabled=false;
+  document.getElementById('title').style.display='flex';
+}
+
+document.getElementById('pause-resume').onclick=function(){ closePauseMenu(); };
+document.getElementById('pause-leave').onclick=function(){ leaveToMenu(); };
+
+document.addEventListener('wheel',function(e){ if(!running||panelOpen()||pauseMenuOpen)return; player.slot=(player.slot+(e.deltaY>0?1:-1)+5)%5; updateHotbar(); e.preventDefault(); },{passive:false});
 
 // ─── Panels ──────────────────────────────────────────────────────────────────
 var kitOpen=false, helpOpen=false;
-function panelOpen(){ return kitOpen||helpOpen||player.dead; }
+function panelOpen(){ return kitOpen||helpOpen||player.dead||pauseMenuOpen; }
 function toggleKit(){ if(!player.inSafe){msg('Change kits only in the Safe Zone!');return;}
-  kitOpen=!kitOpen; helpOpen=false; document.getElementById('kitPanel').style.display=kitOpen?'block':'none'; document.getElementById('helpPanel').style.display='none'; if(kitOpen){clearKeys(); if(locked)document.exitPointerLock();} }
-function toggleHelp(){ helpOpen=!helpOpen; kitOpen=false; document.getElementById('helpPanel').style.display=helpOpen?'block':'none'; document.getElementById('kitPanel').style.display='none'; if(helpOpen){clearKeys(); if(locked)document.exitPointerLock();} }
+  kitOpen=!kitOpen; helpOpen=false; document.getElementById('kitPanel').style.display=kitOpen?'block':'none'; document.getElementById('helpPanel').style.display='none'; if(kitOpen){clearKeys(); if(locked){suppressNextLockChange=true; document.exitPointerLock();}} }
+function toggleHelp(){ helpOpen=!helpOpen; kitOpen=false; document.getElementById('helpPanel').style.display=helpOpen?'block':'none'; document.getElementById('kitPanel').style.display='none'; if(helpOpen){clearKeys(); if(locked){suppressNextLockChange=true; document.exitPointerLock();}} }
 document.getElementById('b-kits').onclick=toggleKit;
 document.getElementById('b-help').onclick=toggleHelp;
 document.getElementById('kit-close').onclick=function(){kitOpen=false;document.getElementById('kitPanel').style.display='none';lockMouse();};
@@ -713,7 +808,7 @@ function damage(d, sourceId, sourceName){ if(player.dead)return; if(player.shiel
       player.dead=true;
       publishDeath(sourceId || null, sourceName || null);
       document.getElementById('death').style.display='flex';
-      if(locked)document.exitPointerLock(); } }
+      if(locked){ suppressNextLockChange=true; document.exitPointerLock(); } } }
   updateHearts(); updateHotbar(); }
 function flashRed(){ var f=document.getElementById('flash'); f.style.background='rgba(200,0,0,0.32)'; setTimeout(function(){f.style.background='rgba(200,0,0,0)';},150); }
 function totemFX(){ var e=document.getElementById('totemfx'); e.style.display='block'; var t=0;
@@ -1010,6 +1105,14 @@ function startGame(){
   if(isTouch) document.getElementById('mobile').style.display='block';
   updateHearts(); updateHotbar(); running=true; last=performance.now(); requestAnimationFrame(loop);
   if(!isTouch) lockMouse();
+  // re-announce ourselves now that the game is live
+  if(multiplayerActive && ablyChannel){
+    ablyChannel.publish('hello', {
+      id: myId, name: myName,
+      x: player.x, y: player.y, z: player.z,
+      yaw: player.yaw, pitch: player.pitch, hp: player.hp, kit: player.kit, dead: false, shield: false
+    });
+  }
 }
 
 document.getElementById('play').onclick=function(){
@@ -1049,8 +1152,7 @@ document.getElementById('solo-btn').onclick=function(){
   startGame();
 };
 
-// Click the pause overlay to resume + re-lock
-document.getElementById('resumePrompt').addEventListener('mousedown',function(e){ e.stopPropagation(); document.getElementById('resumePrompt').style.display='none'; lockMouse(); });
+// (pause menu handled by openPauseMenu / closePauseMenu above)
 })();
 </script>
 </body>
