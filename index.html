@@ -138,7 +138,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; font-fami
     <h3>Health</h3>
     <ul><li>10 hearts (20 HP) + hunger bar</li><li>Eat steak to refill hunger; full hunger regens health</li></ul>
     <h3>Kits</h3>
-    <ul><li><b>Fighter:</b> sword 7 dmg, axe 9 dmg (disables shields 5s)</li><li><b>Demolitionist:</b> flame bow + infinite TNT carts</li></ul>
+    <ul><li><b>Fighter:</b> sword 4 dmg (8 crit), axe 6 dmg (7 crit, very slow, disables shields 5s)</li><li><b>Demolitionist:</b> flame bow up to 4 dmg + TNT carts (max 10 explosion damage)</li></ul>
     <button class="close-btn" id="help-close">✕ Close</button>
   </div>
   <div id="death">
@@ -288,6 +288,8 @@ function onAblyMessage(msg) {
     handleRemoteAttack(d);
   } else if (msg.name === 'arrow') {
     handleRemoteArrow(d);
+  } else if (msg.name === 'botkill') {
+    handleBotKill(d);
   } else if (msg.name === 'die') {
     mpDebug((d.name||'?') + ' died');
     if (d.killerId === myId) { msg2('\u2620 You killed ' + (d.name||'someone') + '!'); }
@@ -430,6 +432,9 @@ function handleRemoteAttack(d) {
   if (Math.sqrt(dx*dx+dy*dy+dz*dz) > 3.6) return;
   var horiz = Math.sqrt(dx*dx+dz*dz)||1;
   if ((dx/horiz)*d.dx + (dz/horiz)*d.dz < 0.35) return;
+  // spawn hit FX at our own position so we see we got hit
+  spawnHitFX(player.x, player.y+1.1, player.z, d.crit||false);
+  damageNumber(player.x, player.y+2.0, player.z, d.dmg||5, d.crit||false);
   damage(d.dmg||5, d.id, d.name);
 }
 
@@ -597,59 +602,76 @@ window.addEventListener('blur', clearKeys);
 document.addEventListener('visibilitychange',function(){ if(document.hidden)clearKeys(); });
 var locked = false;
 var pauseMenuOpen = false;
-var suppressNextLockChange = false; // set true before intentional exitPointerLock calls
+var suppressNextLockChange = false;
+var dragLook = false, dragX = 0, dragY = 0;
+var useDragFallback = false; // true only if pointer lock is genuinely broken
 
 function lockMouse(){
-  try{ if(!locked && glCanvas.requestPointerLock) glCanvas.requestPointerLock(); }catch(e){}
+  if(locked) return;
+  try{ glCanvas.requestPointerLock(); }catch(e){ useDragFallback=true; }
 }
-function applyLook(dx,dy){ var s=0.0025; player.yaw-=dx*s; player.pitch-=dy*s; var lim=Math.PI/2-0.05; if(player.pitch>lim)player.pitch=lim; if(player.pitch<-lim)player.pitch=-lim; }
+function applyLook(dx,dy){
+  var s=0.0025; player.yaw-=dx*s; player.pitch-=dy*s;
+  var lim=Math.PI/2-0.05; if(player.pitch>lim)player.pitch=lim; if(player.pitch<-lim)player.pitch=-lim;
+}
 
-// drag-look: only active when pointer lock is genuinely unavailable (e.g. iframe)
-var dragLook=false, dragX=0, dragY=0;
-var lockSupported = !!(glCanvas.requestPointerLock);
+document.addEventListener('pointerlockchange',function(){
+  locked = (document.pointerLockElement===glCanvas);
+  if(locked){
+    useDragFallback=false; dragLook=false;
+    // lock succeeded — hide pause menu if it was showing
+    if(pauseMenuOpen){ pauseMenuOpen=false; document.getElementById('pauseMenu').style.display='none'; }
+  } else {
+    // lock released
+    if(suppressNextLockChange){ suppressNextLockChange=false; return; }
+    if(running && !panelOpen()) openPauseMenu();
+  }
+});
 
-document.addEventListener('mousemove',function(e){ if(!running||panelOpen()||pauseMenuOpen||player.dead)return;
+document.addEventListener('pointerlockerror',function(){
+  // Lock failed (permissions policy, iframe, etc.) — fall back to drag-look
+  useDragFallback=true;
+  mpDebug('Pointer lock unavailable, using drag-look');
+});
+
+document.addEventListener('mousemove',function(e){
+  if(!running||panelOpen()||player.dead) return;
   if(locked){ applyLook(e.movementX||0, e.movementY||0); }
-  else if(dragLook){ applyLook((e.clientX-dragX)*1.2,(e.clientY-dragY)*1.2); dragX=e.clientX; dragY=e.clientY; } });
+  else if(dragLook){ applyLook((e.clientX-dragX)*1.2,(e.clientY-dragY)*1.2); dragX=e.clientX; dragY=e.clientY; }
+});
 
-document.addEventListener('mousedown',function(e){
-  if(!running||player.dead)return;
-  // if pause menu is open, let its own buttons handle clicks
+// Single unified click handler on the canvas — this IS the user gesture
+glCanvas.addEventListener('mousedown',function(e){
+  if(!running||player.dead) return;
   if(pauseMenuOpen) return;
   if(panelOpen()) return;
   if(!locked){
     lockMouse();
-    if(!lockSupported){ dragLook=true; dragX=e.clientX; dragY=e.clientY; }
+    if(useDragFallback){ dragLook=true; dragX=e.clientX; dragY=e.clientY; }
+    return; // consume this click just to acquire lock, don't fire action
   }
   var it=curItem();
   if(e.button===0){
     if(it==='bow'){ player.bowCharging=true; player.bowCharge=0; }
     else { player.mining=true; attack(); }
   }
-  if(e.button===2){ if(it==='bow'){ } else { player.using=true; use(); } }
+  if(e.button===2){ player.using=true; use(); }
+  e.preventDefault();
 });
+
 document.addEventListener('mouseup',function(e){
   if(e.button===0){ player.mining=false; if(player.bowCharging){fireBow();player.bowCharging=false;} }
   if(e.button===2){ player.using=false; }
-  if(!lockSupported) dragLook=false;
+  if(useDragFallback) dragLook=false;
 });
+
 document.addEventListener('contextmenu',function(e){e.preventDefault();});
 
-// Pointer lock change: when browser releases lock (ESC press triggers this first)
-document.addEventListener('pointerlockchange',function(){
-  locked=(document.pointerLockElement===glCanvas);
-  if(!locked && running && !panelOpen()){
-    if(suppressNextLockChange){ suppressNextLockChange=false; return; }
-    // Browser released the lock — show pause menu
-    openPauseMenu();
-  }
-});
-
-// ESC key: open/close pause menu (browser also releases pointer lock, handled above)
+// ESC: browser releases pointer lock first (fires pointerlockchange), then we get the keydown
 document.addEventListener('keydown',function(e){
   if(e.code==='Escape' && running){
     if(pauseMenuOpen){ closePauseMenu(); }
-    // else: browser will fire pointerlockchange which calls openPauseMenu
+    // if locked, browser will release lock → pointerlockchange → openPauseMenu
   }
 },{capture:true});
 
@@ -726,8 +748,8 @@ function eatUpdate(dt){
     if(player.eatProg>=1.2){ player.eatProg=0; eatSteak(); }
   } else { player.eatProg=0; }
 }
-var DMG = {sword:7, axe:9};
-var SWING = {sword:0.4, axe:0.55, bow:0.25, def:0.4};
+var DMG = {sword:4, axe:6};
+var SWING = {sword:0.4, axe:1.1, bow:0.25, def:0.4}; // axe very slow
 
 // ─── Entities ─────────────────────────────────────────────────────────────────
 var arrows=[], tnts=[], dummies=[];
@@ -753,6 +775,20 @@ function makeDummy(dx,dz,type){ var grp=new THREE.Group(),bodyCol=type==='fighte
   scene.add(grp);
   return {grp:grp,x:WX/2+dx,y:11,z:WZ/2+dz,hp:20,max:20,dead:false,resp:0,type:type,shieldDis:0,hx:dx,hz:dz,atk:0,kx:0,ky:0,kz:0,flash:0,baseCol:bodyCol,body:body}; }
 dummies.push(makeDummy(22,8,'fighter')); dummies.push(makeDummy(-22,-8,'demo')); dummies.push(makeDummy(-18,20,'fighter')); dummies.push(makeDummy(25,-18,'demo'));
+
+// Bot kill sync: when we kill a bot, tell others so they see it die too
+function killDummy(d){
+  d.dead=true; d.resp=5; d.grp.visible=false; msg('Enemy defeated!');
+  safePublish('botkill', { idx: dummies.indexOf(d), resp: 5 });
+}
+
+// Handle remote bot kill — mirror it locally
+function handleBotKill(d) {
+  var idx = d.idx;
+  if (idx < 0 || idx >= dummies.length) return;
+  var bot = dummies[idx];
+  if (!bot.dead) { bot.dead=true; bot.resp=d.resp||5; bot.grp.visible=false; }
+}
 
 // ─── Hit particles + floating damage numbers ─────────────────────────────────
 var particles=[], dmgNums=[];
@@ -800,14 +836,17 @@ function mineUpdate(dt){
     set(hit.x,hit.y,hit.z,0); markDirty();
     player.mineProg=0; player.mineKey=''; crackMesh.visible=false; } }
 
-function attack(){ if(panelOpen()||player.dead)return; var it=curItem(); if(!it)return; if(player.swing>0)return; player.swing=SWING[it]||SWING.def;
+function attack(){ if(panelOpen()||player.dead)return; var it=curItem(); if(!it)return; if(player.swing>0)return;
+  // can't attack while shield is raised
+  if(player.shield && player.shieldDis<=0){ msg('Lower your shield to attack!'); return; }
+  player.swing=SWING[it]||SWING.def;
   var fwd=lookVec();
   var isCrit = (!player.onGround && player.vy < -0.5);
   // hit AI dummies
   for(var i=0;i<dummies.length;i++){ var d=dummies[i]; if(d.dead)continue;
     var dx=d.x-player.x,dz=d.z-player.z,dy=(d.y+1)-(player.y+EYE),dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
     if(dist<3.4){ var nd=Math.sqrt(dx*dx+dz*dz)||1; if((dx/nd)*fwd.x+(dz/nd)*fwd.z>0.45){
-      var dmg=DMG[it]||3; if(isCrit)dmg=Math.round(dmg*1.5);
+      var dmg=DMG[it]||3; if(isCrit) dmg=(it==='axe'?7:Math.round(dmg*2));
       if(it==='axe')d.shieldDis=5;
       d.hp-=dmg;
       var kb=(it==='axe'?7:5.5)*(isCrit?1.4:1);
@@ -817,13 +856,30 @@ function attack(){ if(panelOpen()||player.dead)return; var it=curItem(); if(!it)
       if(isCrit)msg('💥 CRITICAL HIT!');
       player.lastCrit=isCrit?0.3:0;
       if(d.hp<=0)killDummy(d); } } }
+  // hit remote players — show FX locally on attacker side
+  var hitAny = false;
+  Object.keys(remotePlayers).forEach(function(rid){
+    var rp = remotePlayers[rid]; if(rp.dead) return;
+    var rdx=rp.x-player.x, rdz=rp.z-player.z, rdy=(rp.y+1)-(player.y+EYE);
+    var rdist=Math.sqrt(rdx*rdx+rdy*rdy+rdz*rdz);
+    if(rdist<3.4){ var rnd=Math.sqrt(rdx*rdx+rdz*rdz)||1;
+      if((rdx/rnd)*fwd.x+(rdz/rnd)*fwd.z>0.45){
+        var rdmg=DMG[it]||3; if(isCrit) rdmg=(it==='axe'?7:Math.round(rdmg*2));
+        spawnHitFX(rp.x,rp.y+1.1,rp.z,isCrit);
+        damageNumber(rp.x,rp.y+2.0,rp.z,rdmg,isCrit);
+        if(isCrit){ msg('💥 CRITICAL HIT on '+rp.name+'!'); } else { msg('Hit '+rp.name+' for '+rdmg); }
+        player.lastCrit=isCrit?0.3:0;
+        hitAny=true;
+      }
+    }
+  });
   // broadcast attack to remote players
   var dmgToSend = DMG[it]||3;
-  if(isCrit) dmgToSend = Math.round(dmgToSend*1.5);
+  if(isCrit) dmgToSend = (it==='axe' ? 7 : Math.round(dmgToSend*2));
   publishAttack(dmgToSend, isCrit, fwd.x, fwd.z);
 }
 
-function killDummy(d){ d.dead=true; d.resp=5; d.grp.visible=false; msg('Enemy defeated!'); }
+// killDummy defined above near dummies spawn
 function use(){ if(panelOpen()||player.dead)return; var it=curItem(); if(!it)return;
   if(it==='steak'){ return; }
   if(it==='tnt'){
@@ -1047,7 +1103,7 @@ function updateArrows(dt){ for(var i=arrows.length-1;i>=0;i--){ var a=arrows[i];
   if(a.life<=0||get(Math.floor(ax2),Math.floor(ay),Math.floor(az))!==0)rm=true;
   if(!rm)for(var j=0;j<tnts.length;j++){var t=tnts[j]; if(Math.abs(ax2-t.x)<0.7&&Math.abs(ay-t.y)<0.8&&Math.abs(az-t.z)<0.7){ if(!t.lit&&a.fire){t.lit=true;t.timer=0.4;msg('💥 TNT ignited!');} rm=true; break; }}
   if(!rm && !a.remote) for(var k=0;k<dummies.length;k++){var d=dummies[k];if(d.dead)continue; if(Math.abs(ax2-d.x)<0.7&&Math.abs(ay-(d.y+1))<1.1&&Math.abs(az-d.z)<0.7){
-    var ch=(a.charge!==undefined?a.charge:1); var admg=Math.max(2,Math.round(DMG.sword*ch));
+    var ch=(a.charge!==undefined?a.charge:1); var admg=Math.max(1,Math.round(4*ch));
     d.hp-=admg; d.flash=0.18;
     var kb=5.5*0.5*ch; d.kx=(a.dx||0)*kb; d.kz=(a.dz||0)*kb; d.ky=2.5*ch;
     spawnHitFX(d.x,d.y+1.1,d.z,false); damageNumber(d.x,d.y+2.0,d.z,admg,false);
@@ -1064,9 +1120,9 @@ function explode(t){ msg('💥 BOOM!');
   var tntBlockY=Math.floor(t.y-0.5);
   var feetY=Math.floor(player.y);
   if(horiz<6){ var falloff=Math.max(0,1-horiz/6);
-    var dmg; if(feetY<tntBlockY){ dmg=Math.round(3*falloff); } else { dmg=Math.round(24*falloff); }
+    var dmg; if(feetY<tntBlockY){ dmg=Math.round(2*falloff); } else { dmg=Math.round(10*falloff); }
     if(dmg>0) damage(dmg, null, 'TNT'); }
-  for(var i=0;i<dummies.length;i++){var d=dummies[i];if(d.dead)continue; var dd=Math.sqrt((t.x-d.x)*(t.x-d.x)+(t.z-d.z)*(t.z-d.z)+(t.y-d.y)*(t.y-d.y)); if(dd<6){ var dfeet=Math.floor(d.y); var ddmg=(dfeet<tntBlockY)?Math.round(3*(1-dd/6)):Math.round(24*(1-dd/6)); d.hp-=ddmg; if(d.hp<=0)killDummy(d);}}
+  for(var i=0;i<dummies.length;i++){var d=dummies[i];if(d.dead)continue; var dd=Math.sqrt((t.x-d.x)*(t.x-d.x)+(t.z-d.z)*(t.z-d.z)+(t.y-d.y)*(t.y-d.y)); if(dd<6){ var dfeet=Math.floor(d.y); var ddmg=(dfeet<tntBlockY)?Math.round(2*(1-dd/6)):Math.round(10*(1-dd/6)); d.hp-=ddmg; if(d.hp<=0)killDummy(d);}}
   var bx=Math.floor(t.x),by=Math.floor(t.y),bz=Math.floor(t.z);
   for(var x=-2;x<=2;x++)for(var y=-2;y<=2;y++)for(var z=-2;z<=2;z++){ var bb=get(bx+x,by+y,bz+z); if(bb!==4&&bb!==5&&bb!==0&&Math.random()<0.7)set(bx+x,by+y,bz+z,0); }
   markDirty(); publishTNTExplode(t.x, t.y, t.z);
