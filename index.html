@@ -108,6 +108,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; font-fami
   <div id="flash"></div>
   <div id="totemfx"></div>
   <div id="fps"></div>
+  <div id="mp-debug" style="position:absolute;top:24px;left:8px;color:#8f8;font-size:10px;text-shadow:1px 1px #000;line-height:1.5;pointer-events:none;max-width:300px;"></div>
   <div id="kit-indicator">No Kit Selected</div>
   <div id="online-indicator">Solo</div>
   <div id="zone-indicator">SAFE ZONE</div>
@@ -172,243 +173,300 @@ if (typeof THREE === 'undefined') {
 }
 
 // ─── Multiplayer state ───────────────────────────────────────────────────────
+// ─── Multiplayer state ───────────────────────────────────────────────────────
 var ablyClient = null;
 var ablyChannel = null;
 var myId = 'p_' + Math.random().toString(36).slice(2, 9);
 var myName = 'Player';
 var roomCode = 'room1';
-var remotePlayers = {}; // keyed by clientId: { mesh, x, y, z, yaw, pitch, hp, kit, dead, name, nameCanvas, nameSprite, tx, ty, tz }
+var remotePlayers = {};
 var statePublishAcc = 0;
-var STATE_HZ = 0.05; // publish every 50ms
+var STATE_HZ = 0.05;
 var multiplayerActive = false;
+
+// Debug log shown in UI
+var mpLog = [];
+function mpDebug(txt) {
+  mpLog.push(txt); if (mpLog.length > 6) mpLog.shift();
+  var el = document.getElementById('mp-debug');
+  if (el) el.innerHTML = mpLog.map(function(l){return '<span>'+l+'</span>';}).join('<br>');
+  console.log('[MP]', txt);
+}
 
 function initAbly(apiKey, onReady, onError) {
   try {
-    ablyClient = new Ably.Realtime({ key: apiKey, clientId: myId });
+    // echoMessages:false stops us receiving our own publishes
+    ablyClient = new Ably.Realtime({ key: apiKey, echoMessages: false });
     ablyClient.connection.on('connected', function() {
+      mpDebug('Connected id=' + ablyClient.connection.id);
+      // use Ably connection id as our stable identifier
+      myId = 'p_' + ablyClient.connection.id;
       ablyChannel = ablyClient.channels.get('mightblox-' + roomCode);
-      ablyChannel.subscribe(onAblyMessage);
-      // presence
-      ablyChannel.presence.enter({ name: myName });
+      ablyChannel.subscribe(function(msg){ onAblyMessage(msg); });
       multiplayerActive = true;
-      // announce ourselves immediately so existing players know we joined
-      ablyChannel.publish('hello', {
-        id: myId, name: myName,
-        x: WX/2, y: 11, z: WZ/2,
-        yaw: 0, pitch: 0, hp: 20, kit: null, dead: false, shield: false
-      });
+      mpDebug('Subscribed to mightblox-' + roomCode);
+      // broadcast hello so others know we joined
+      safePublish('hello', buildHelloPayload());
       onReady();
     });
-    ablyClient.connection.on('failed', function(err) { onError(err); });
-    ablyClient.connection.on('disconnected', function() {
-      document.getElementById('online-indicator').textContent = '🔴 Disconnected';
+    ablyClient.connection.on('failed', function(sc) {
+      var reason = sc && sc.reason ? sc.reason.message : 'unknown';
+      mpDebug('FAILED: ' + reason);
+      onError(new Error(reason));
     });
-  } catch(e) { onError(e); }
+    ablyClient.connection.on('disconnected', function() {
+      mpDebug('Disconnected');
+      document.getElementById('online-indicator').textContent = '\u{1F534} Disconnected';
+    });
+    ablyClient.connection.on('suspended', function() { mpDebug('Suspended'); });
+  } catch(e) { mpDebug('initAbly error: ' + e.message); onError(e); }
+}
+
+function buildHelloPayload() {
+  return { id: myId, name: myName,
+    x: player.x||WX/2, y: player.y||11, z: player.z||WZ/2,
+    yaw: player.yaw||0, hp: player.hp||20, kit: player.kit,
+    dead: false, shield: false, item: curItem()||'', slot: player.slot||0 };
+}
+
+function safePublish(name, data) {
+  if (!ablyChannel || !multiplayerActive) return;
+  try {
+    var result = ablyChannel.publish(name, data);
+    if (result && typeof result.catch === 'function') {
+      result.catch(function(e){ mpDebug('pub err '+name+': '+e.message); });
+    }
+  } catch(e) { mpDebug('pub throw '+name+': '+e.message); }
 }
 
 function publishState() {
-  if (!ablyChannel || !multiplayerActive) return;
-  ablyChannel.publish('state', {
-    id: myId,
-    name: myName,
-    x: +player.x.toFixed(2),
-    y: +player.y.toFixed(2),
-    z: +player.z.toFixed(2),
+  var it = curItem();
+  safePublish('state', {
+    id: myId, name: myName,
+    x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2),
     yaw: +player.yaw.toFixed(3),
-    pitch: +player.pitch.toFixed(3),
-    hp: player.hp,
-    kit: player.kit,
-    dead: player.dead,
-    shield: (player.shield && player.shieldDis <= 0)
+    hp: player.hp, kit: player.kit, dead: player.dead,
+    shield: (player.shield && player.shieldDis <= 0),
+    item: it || '', slot: player.slot
   });
 }
 
 function publishAttack(dmg, isCrit, dirX, dirZ) {
-  if (!ablyChannel || !multiplayerActive) return;
-  ablyChannel.publish('attack', {
-    id: myId,
-    name: myName,
-    dmg: dmg,
-    crit: isCrit,
-    x: +player.x.toFixed(2),
-    y: +player.y.toFixed(2),
-    z: +player.z.toFixed(2),
-    dx: +dirX.toFixed(3),
-    dz: +dirZ.toFixed(3)
+  safePublish('attack', {
+    id: myId, name: myName, dmg: dmg, crit: isCrit,
+    x: +player.x.toFixed(2), y: +player.y.toFixed(2), z: +player.z.toFixed(2),
+    dx: +dirX.toFixed(3), dz: +dirZ.toFixed(3)
   });
 }
 
 function publishArrow(vx, vy, vz, ox, oy, oz, charge) {
-  if (!ablyChannel || !multiplayerActive) return;
-  ablyChannel.publish('arrow', { id: myId, vx: vx, vy: vy, vz: vz, ox: ox, oy: oy, oz: oz, charge: charge });
+  safePublish('arrow', { id: myId, vx: vx, vy: vy, vz: vz, ox: ox, oy: oy, oz: oz, charge: charge });
 }
 
 function publishDeath(killerId, killerName) {
-  if (!ablyChannel || !multiplayerActive) return;
-  ablyChannel.publish('die', { id: myId, name: myName, killerId: killerId, killerName: killerName || '???' });
+  safePublish('die', { id: myId, name: myName, killerId: killerId||'', killerName: killerName||'???' });
 }
 
 function publishTNT(x, y, z) {
-  if (!ablyChannel || !multiplayerActive) return;
-  ablyChannel.publish('tnt', { id: myId, x: x, y: y, z: z, type: 'place' });
+  safePublish('tnt', { id: myId, x: x, y: y, z: z, type: 'place' });
 }
 
 function publishTNTExplode(x, y, z) {
-  if (!ablyChannel || !multiplayerActive) return;
-  ablyChannel.publish('tnt', { id: myId, x: x, y: y, z: z, type: 'explode' });
+  safePublish('tnt', { id: myId, x: x, y: y, z: z, type: 'explode' });
 }
 
 function onAblyMessage(msg) {
   var d = msg.data;
-  if (!d) return;
-  // filter own messages by both the embedded id and the Ably clientId
-  if (d.id === myId) return;
-  if (msg.clientId && msg.clientId === myId) return;
-
-  if (msg.name === 'state') {
+  if (!d || d.id === myId) return;
+  if (msg.name === 'hello') {
+    mpDebug('Hello from ' + (d.name||d.id));
     updateRemotePlayer(d);
-  } else if (msg.name === 'hello') {
-    // someone just joined — immediately broadcast our state so they can see us
-    publishState();
-    updateRemotePlayer(d); // treat as a state update too (contains same fields)
+    publishState(); // reply so they can see us immediately
+  } else if (msg.name === 'state') {
+    updateRemotePlayer(d);
   } else if (msg.name === 'attack') {
     handleRemoteAttack(d);
   } else if (msg.name === 'arrow') {
     handleRemoteArrow(d);
   } else if (msg.name === 'die') {
-    if (d.killerId === myId) {
-      msg2('☠ You killed ' + d.name + '!');
-    } else {
-      msg2(d.killerName + ' killed ' + d.name);
-    }
-    // hide that remote player temporarily
+    mpDebug((d.name||'?') + ' died');
+    if (d.killerId === myId) { msg2('\u2620 You killed ' + (d.name||'someone') + '!'); }
+    else { msg2((d.killerName||'Someone') + ' killed ' + (d.name||'someone')); }
     var rp = remotePlayers[d.id];
     if (rp) { rp.grp.visible = false; rp.dead = true; }
   }
 }
 
-// ─── Remote player meshes ────────────────────────────────────────────────────
-function makeRemoteMesh(name, kit) {
-  var grp = new THREE.Group();
-  var bodyCol = kit === 'fighter' ? 0x4a7adc : (kit === 'demo' ? 0xdc4a4a : 0x7a7adc);
-  var legCol  = kit === 'fighter' ? 0x3a5ab0 : (kit === 'demo' ? 0xb03a3a : 0x5a5ab0);
-  var body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.9, 0.3), new THREE.MeshBasicMaterial({color: bodyCol}));
-  body.position.y = 1.05; grp.add(body);
-  var head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshBasicMaterial({color: 0xf4c080}));
-  head.position.y = 1.75; grp.add(head);
-  var legM = new THREE.MeshBasicMaterial({color: legCol});
-  var l1 = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.7, 0.3), legM); l1.position.set(-0.16, 0.35, 0); grp.add(l1);
-  var l2 = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.7, 0.3), legM); l2.position.set( 0.16, 0.35, 0); grp.add(l2);
-  // nametag as a canvas sprite
-  var nc = document.createElement('canvas'); nc.width = 256; nc.height = 48;
+// ─── Remote player meshes (green, with weapon/shield display) ─────────────────
+
+function makeItemMesh3D(type) {
+  var g = new THREE.Group();
+  if (type === 'sword') {
+    var b = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.08,0.6), new THREE.MeshBasicMaterial({color:0xcfcfd4})); b.position.z=0.28; g.add(b);
+    var gd = new THREE.Mesh(new THREE.BoxGeometry(0.26,0.08,0.08), new THREE.MeshBasicMaterial({color:0x555})); g.add(gd);
+    var h = new THREE.Mesh(new THREE.BoxGeometry(0.07,0.07,0.18), new THREE.MeshBasicMaterial({color:0x7a4a22})); h.position.z=-0.13; g.add(h);
+  } else if (type === 'axe') {
+    var ah = new THREE.Mesh(new THREE.BoxGeometry(0.42,0.42,0.08), new THREE.MeshBasicMaterial({color:0xcfcfd4})); ah.position.set(0,0.1,0.22); g.add(ah);
+    var as = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.08,0.55), new THREE.MeshBasicMaterial({color:0x7a4a22})); g.add(as);
+  } else if (type === 'bow') {
+    var bw = new THREE.Mesh(new THREE.BoxGeometry(0.08,0.55,0.08), new THREE.MeshBasicMaterial({color:0x8B4513})); g.add(bw);
+    var bs = new THREE.Mesh(new THREE.BoxGeometry(0.02,0.48,0.02), new THREE.MeshBasicMaterial({color:0xddd})); bs.position.z=0.08; g.add(bs);
+  } else if (type === 'shield') {
+    var sf = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.65,0.07), new THREE.MeshBasicMaterial({color:0xc9a23a})); g.add(sf);
+    var sb = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.16,0.09), new THREE.MeshBasicMaterial({color:0xd4af37})); sb.position.z=0.08; g.add(sb);
+  } else if (type === 'tnt') {
+    var tb = new THREE.Mesh(new THREE.BoxGeometry(0.28,0.28,0.28), new THREE.MeshBasicMaterial({color:0xcc2200})); g.add(tb);
+  } else if (type === 'steak') {
+    var sm = new THREE.Mesh(new THREE.BoxGeometry(0.22,0.18,0.26), new THREE.MeshBasicMaterial({color:0x8a5a2a})); g.add(sm);
+  } else if (type === 'totem') {
+    var tm = new THREE.Mesh(new THREE.BoxGeometry(0.18,0.32,0.09), new THREE.MeshBasicMaterial({color:0xffd700})); g.add(tm);
+  }
+  return g;
+}
+
+function makeNameTag(name) {
+  var nc = document.createElement('canvas'); nc.width = 256; nc.height = 52;
   var nctx = nc.getContext('2d');
-  nctx.fillStyle = 'rgba(0,0,0,0.6)';
-  nctx.fillRect(0, 0, 256, 48);
-  nctx.fillStyle = '#ffffff';
-  nctx.font = 'bold 28px Courier New';
+  nctx.fillStyle = 'rgba(0,0,0,0.7)';
+  nctx.beginPath(); nctx.roundRect(4,4,248,44,8); nctx.fill();
+  nctx.fillStyle = '#7dff7d';
+  nctx.font = 'bold 26px Courier New';
   nctx.textAlign = 'center';
-  nctx.fillText(name.slice(0,14), 128, 34);
+  nctx.fillText((name||'?').slice(0,14), 128, 32);
   var ntex = new THREE.CanvasTexture(nc);
   var sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: ntex, transparent: true, depthTest: false}));
-  sprite.scale.set(2.0, 0.38, 1);
-  sprite.position.y = 2.4;
-  grp.add(sprite);
+  sprite.scale.set(2.2, 0.46, 1);
+  sprite.position.y = 2.55;
+  return sprite;
+}
+
+function makeRemoteMesh(name, kit, item, shielding) {
+  var grp = new THREE.Group();
+  var bodyCol = 0x2a8a2a, legCol = 0x1a6a1a;
+
+  var body = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.9,0.3), new THREE.MeshBasicMaterial({color:bodyCol}));
+  body.position.y = 1.05; grp.add(body);
+  var head = new THREE.Mesh(new THREE.BoxGeometry(0.5,0.5,0.5), new THREE.MeshBasicMaterial({color:0xf4c080}));
+  head.position.y = 1.75; grp.add(head);
+  var legM = new THREE.MeshBasicMaterial({color:legCol});
+  var l1 = new THREE.Mesh(new THREE.BoxGeometry(0.28,0.7,0.3),legM); l1.position.set(-0.16,0.35,0); grp.add(l1);
+  var l2 = new THREE.Mesh(new THREE.BoxGeometry(0.28,0.7,0.3),legM); l2.position.set( 0.16,0.35,0); grp.add(l2);
+  var armM = new THREE.MeshBasicMaterial({color:bodyCol});
+  var aR = new THREE.Mesh(new THREE.BoxGeometry(0.22,0.7,0.25),armM); aR.position.set( 0.42,1.05,0); grp.add(aR);
+  var aL = new THREE.Mesh(new THREE.BoxGeometry(0.22,0.7,0.25),armM); aL.position.set(-0.42,1.05,0); grp.add(aL);
+
+  grp.add(makeNameTag(name));
   scene.add(grp);
-  return { grp: grp, body: body, head: head, nameSprite: sprite, baseCols: {body: bodyCol, leg: legCol} };
+
+  var obj = {grp:grp, body:body, head:head, aL:aL, aR:aR,
+    name:name||'?', kit:kit, item:item||'', shield:shielding||false,
+    wpnNode:null, offNode:null};
+  attachWeapons(obj);
+  return obj;
+}
+
+function attachWeapons(obj) {
+  // remove old weapon nodes
+  if (obj.wpnNode) obj.grp.remove(obj.wpnNode);
+  if (obj.offNode) obj.grp.remove(obj.offNode);
+  obj.wpnNode = null; obj.offNode = null;
+
+  if (obj.shield) {
+    // shield block pose: shield held out front
+    var sn = new THREE.Group();
+    sn.add(makeItemMesh3D('shield'));
+    sn.position.set(0, 1.1, 0.48);
+    obj.grp.add(sn); obj.wpnNode = sn;
+  } else {
+    // right hand: current item
+    if (obj.item) {
+      var wn = new THREE.Group();
+      wn.add(makeItemMesh3D(obj.item));
+      wn.position.set(0.44, 0.95, 0.3);
+      obj.grp.add(wn); obj.wpnNode = wn;
+    }
+    // left hand: lowered shield if fighter, totem otherwise
+    var offItem = (obj.kit === 'fighter') ? 'shield' : 'totem';
+    var on = new THREE.Group();
+    var offMesh = makeItemMesh3D(offItem);
+    offMesh.scale.set(0.55,0.55,0.55);
+    on.add(offMesh);
+    on.position.set(-0.44, 1.0, 0.18);
+    on.rotation.y = 0.3;
+    obj.grp.add(on); obj.offNode = on;
+  }
 }
 
 function updateRemotePlayer(d) {
-  // NOTE: intentionally does NOT gate on `running` — messages can arrive before game starts
-  // and we buffer them so the player appears immediately when game loads
   if (!d || !d.id) return;
   var rp = remotePlayers[d.id];
   if (!rp) {
-    var meshData = makeRemoteMesh(d.name || d.id, d.kit);
-    remotePlayers[d.id] = {
-      grp: meshData.grp, body: meshData.body,
-      x: d.x || WX/2, y: d.y || 11, z: d.z || WZ/2,
-      tx: d.x || WX/2, ty: d.y || 11, tz: d.z || WZ/2,
-      yaw: d.yaw || 0, pitch: d.pitch || 0,
-      hp: d.hp || 20, kit: d.kit, dead: d.dead || false,
-      name: d.name || d.id,
-      shield: d.shield || false,
-      lastSeen: Date.now()
-    };
-    rp = remotePlayers[d.id];
+    mpDebug('Spawning ' + (d.name||d.id));
+    rp = makeRemoteMesh(d.name||d.id, d.kit, d.item||'', d.shield||false);
+    rp.x = d.x||WX/2; rp.y = d.y||11; rp.z = d.z||WZ/2;
+    rp.tx = rp.x; rp.ty = rp.y; rp.tz = rp.z;
+    rp.yaw = d.yaw||0; rp.hp = d.hp||20;
+    rp.dead = d.dead||false; rp.lastSeen = Date.now();
+    remotePlayers[d.id] = rp;
     updateOnlineCount();
   }
-  // set targets for lerp interpolation
   if (d.x !== undefined) { rp.tx = d.x; rp.ty = d.y; rp.tz = d.z; }
   if (d.yaw !== undefined) rp.yaw = d.yaw;
   if (d.hp !== undefined) rp.hp = d.hp;
-  if (d.kit !== undefined) rp.kit = d.kit;
   if (d.dead !== undefined) rp.dead = d.dead;
-  rp.shield = d.shield || false;
+  var newItem   = d.item   !== undefined ? (d.item||'')    : rp.item;
+  var newShield = d.shield !== undefined ? !!d.shield       : rp.shield;
+  var newKit    = d.kit    !== undefined ? d.kit            : rp.kit;
+  if (newItem !== rp.item || newShield !== rp.shield || newKit !== rp.kit) {
+    rp.item = newItem; rp.shield = newShield; rp.kit = newKit;
+    attachWeapons(rp);
+  }
   rp.lastSeen = Date.now();
   rp.grp.visible = !rp.dead;
 }
 
 function handleRemoteAttack(d) {
-  // check if this attack hits the local player
-  var dx = player.x - d.x;
-  var dz = player.z - d.z;
-  var dy = (player.y + EYE) - (d.y + EYE);
-  var dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (dist > 3.6) return;
-  var horiz = Math.sqrt(dx * dx + dz * dz) || 1;
-  // check if we are roughly in the direction of the attack
-  var dot = (dx / horiz) * d.dx + (dz / horiz) * d.dz;
-  if (dot < 0.35) return; // not facing us
-  // apply damage
-  var dmg = d.dmg || 5;
-  lastAttackerName = d.name || d.id;
-  damage(dmg, d.id, d.name);
+  var dx = player.x-d.x, dz = player.z-d.z, dy = (player.y+EYE)-(d.y+EYE);
+  if (Math.sqrt(dx*dx+dy*dy+dz*dz) > 3.6) return;
+  var horiz = Math.sqrt(dx*dx+dz*dz)||1;
+  if ((dx/horiz)*d.dx + (dz/horiz)*d.dz < 0.35) return;
+  damage(d.dmg||5, d.id, d.name);
 }
 
 function handleRemoteArrow(d) {
-  // spawn a visual arrow for remote player shots
-  var m = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.7), new THREE.MeshBasicMaterial({color: 0xff6622}));
-  m.position.set(d.ox, d.oy, d.oz);
-  scene.add(m);
-  var ch = d.charge || 1;
-  var sp = 10 + ch * 22;
-  arrows.push({mesh: m, vx: d.vx, vy: d.vy, vz: d.vz, life: 5, fire: false, charge: ch, dx: d.vx/sp, dz: d.vz/sp, remote: true});
+  var m = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.12,0.7), new THREE.MeshBasicMaterial({color:0xff6622}));
+  m.position.set(d.ox,d.oy,d.oz); scene.add(m);
+  var ch=d.charge||1, sp=10+ch*22;
+  arrows.push({mesh:m,vx:d.vx,vy:d.vy,vz:d.vz,life:5,fire:false,charge:ch,dx:d.vx/sp,dz:d.vz/sp,remote:true});
 }
 
 function updateRemotePlayers(dt) {
   var now = Date.now();
-  var ids = Object.keys(remotePlayers);
-  for (var i = 0; i < ids.length; i++) {
-    var id = ids[i];
+  Object.keys(remotePlayers).forEach(function(id) {
     var rp = remotePlayers[id];
-    // remove stale players (gone > 8 seconds)
-    if (now - rp.lastSeen > 8000) {
-      scene.remove(rp.grp);
-      delete remotePlayers[id];
-      updateOnlineCount();
-      continue;
-    }
-    if (rp.dead) { rp.grp.visible = false; continue; }
-    // lerp toward target position
-    rp.x += (rp.tx - rp.x) * Math.min(1, dt * 18);
-    rp.y += (rp.ty - rp.y) * Math.min(1, dt * 18);
-    rp.z += (rp.tz - rp.z) * Math.min(1, dt * 18);
+    if (now - rp.lastSeen > 10000) { scene.remove(rp.grp); delete remotePlayers[id]; updateOnlineCount(); return; }
+    if (rp.dead) { rp.grp.visible = false; return; }
+    rp.x += (rp.tx-rp.x)*Math.min(1,dt*18);
+    rp.y += (rp.ty-rp.y)*Math.min(1,dt*18);
+    rp.z += (rp.tz-rp.z)*Math.min(1,dt*18);
     rp.grp.visible = true;
-    rp.grp.position.set(rp.x, rp.y, rp.z);
-    rp.grp.rotation.y = rp.yaw || 0;
-  }
+    rp.grp.position.set(rp.x,rp.y,rp.z);
+    rp.grp.rotation.y = rp.yaw||0;
+    // walking animation
+    var bob = Math.sin(now*0.006)*0.22;
+    if(rp.aL) rp.aL.rotation.x = bob;
+    if(rp.aR) rp.aR.rotation.x = -bob;
+  });
 }
 
 function updateOnlineCount() {
   var count = Object.keys(remotePlayers).length + 1;
   var el = document.getElementById('online-indicator');
-  if (multiplayerActive) {
-    el.textContent = '🟢 ' + count + ' online';
-    el.style.color = '#4af';
-  }
+  if (multiplayerActive) { el.textContent = '\u{1F7E2} ' + count + ' online'; el.style.color = '#4af'; }
 }
 
 var lastAttackerName = null;
+
 
 // ─── Renderer ────────────────────────────────────────────────────────────────
 var glCanvas = document.getElementById('gl');
@@ -1105,14 +1163,7 @@ function startGame(){
   if(isTouch) document.getElementById('mobile').style.display='block';
   updateHearts(); updateHotbar(); running=true; last=performance.now(); requestAnimationFrame(loop);
   if(!isTouch) lockMouse();
-  // re-announce ourselves now that the game is live
-  if(multiplayerActive && ablyChannel){
-    ablyChannel.publish('hello', {
-      id: myId, name: myName,
-      x: player.x, y: player.y, z: player.z,
-      yaw: player.yaw, pitch: player.pitch, hp: player.hp, kit: player.kit, dead: false, shield: false
-    });
-  }
+  if(multiplayerActive && ablyChannel){ safePublish('hello', buildHelloPayload()); }
 }
 
 document.getElementById('play').onclick=function(){
