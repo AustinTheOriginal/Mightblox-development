@@ -133,7 +133,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:#000; font-fami
     <h3>Movement</h3>
     <ul><li><b>W A S D</b> — move</li><li><b>Space</b> — jump</li><li><b>Shift</b> — crouch &amp; raise shield</li><li><b>Mouse</b> — look (click to lock for free spinning)</li></ul>
     <h3>Combat</h3>
-    <ul><li><b>Hold left click</b> — attack / mine (bow: hold to charge, release to fire)</li><li><b>Hold right click</b> — eat steak; place TNT/block</li><li><b>1–5</b>, scroll, or tap a slot — switch item</li></ul>
+    <ul><li><b>Left click</b> — attack / mine (bow: hold to charge, release to fire)</li><li><b>Right click</b> — eat steak; place TNT/block; place block</li><li><b>1–6</b>, scroll, or tap a slot — switch item</li><li><b>Mobile:</b> tap right side to attack/place; hold to mine or eat</li></ul>
     <h3>Multiplayer</h3>
     <ul><li>Share your <b>Room Code</b> with friends — everyone in the same room can fight each other</li><li>Other players appear with their name above their head</li><li>PvP works the same as vs AI: swing to hit, use kits strategically</li></ul>
     <h3>Health</h3>
@@ -207,6 +207,7 @@ function initAbly(apiKey, onReady, onError) {
       ablyChannel.subscribe(function(msg){ onAblyMessage(msg); });
       multiplayerActive = true;
       mpDebug('Subscribed to mightblox-' + roomCode);
+      if(roomCode==='12345'){ document.getElementById('online-indicator').style.color='#ff0'; document.getElementById('kit-indicator').textContent='⭐ OFFICIAL ROOM'; mpDebug('*** OFFICIAL ROOM 12345 ***'); }
       // broadcast hello so others know we joined
       safePublish('hello', buildHelloPayload());
       onReady();
@@ -534,7 +535,7 @@ window.addEventListener('resize', function() {
 });
 
 // ─── Texture atlas ───────────────────────────────────────────────────────────
-var TILE=16, NTILES=6;
+var TILE=16, NTILES=8;
 var atlas = document.createElement('canvas'); atlas.width = TILE*NTILES; atlas.height = TILE;
 var ax = atlas.getContext('2d');
 function pxs(i,x,y,c){ ax.fillStyle=c; ax.fillRect(i*TILE+x,y,1,1); }
@@ -557,6 +558,16 @@ fillTile(5,function(x,y){ if(x===0||y===0||x===15||y===15)return 'rgb(212,168,52
   var seed=Math.sin(x*11.1+y*13.3)*22.0; var n=(seed-Math.floor(seed));
   var check=((Math.floor(x/2)+Math.floor(y/2))%2===0);
   if(check)return n<0.5?'rgb(70,200,70)':'rgb(82,212,82)'; return n<0.5?'rgb(54,180,54)':'rgb(64,192,64)'; });
+// Tile 6: placed block (orange bricks)
+fillTile(6,function(x,y){ var bx=Math.floor(x/8), by=Math.floor(y/4); var seed=Math.sin((bx+by*3)*17.3)*4321.7; var n=seed-Math.floor(seed);
+  var mortar=(y%4===0)||(x%8===0&&y%4!==0&&(by%2===0?x%8===0:Math.abs(x-4)<=0));
+  if(mortar)return 'rgb(90,60,40)';
+  if(n<0.2)return 'rgb(210,110,40)'; if(n<0.5)return 'rgb(190,95,35)'; return 'rgb(170,80,30)'; });
+// Tile 7: magma (glowing orange-red)
+fillTile(7,function(x,y){ var seed=Math.sin(x*7.1+y*13.7)*9876.5; var n=seed-Math.floor(seed);
+  var crack=((x%5===0&&y%4!==0)||(y%5===0&&x%4!==0));
+  if(crack)return 'rgb(30,10,0)';
+  if(n<0.2)return 'rgb(255,50,0)'; if(n<0.5)return 'rgb(255,120,0)'; if(n<0.75)return 'rgb(220,70,0)'; return 'rgb(255,180,0)'; });
 var atlasTex = new THREE.CanvasTexture(atlas);
 atlasTex.magFilter = THREE.NearestFilter; atlasTex.minFilter = THREE.NearestFilter; atlasTex.generateMipmaps = false;
 
@@ -575,21 +586,45 @@ var crackMesh = new THREE.Mesh(new THREE.BoxGeometry(1.01,1.01,1.01),
 crackMesh.visible = false; scene.add(crackMesh);
 
 // ─── World ───────────────────────────────────────────────────────────────────
-var WX=100, WY=14, WZ=100, SAFE=11;
+var WX=160, WY=20, WZ=160, SAFE=11;
 var world = new Uint8Array(WX*WY*WZ);
 function idx(x,y,z){ return (y*WZ+z)*WX+x; }
 function get(x,y,z){ if(x<0||x>=WX||y<0||y>=WY||z<0||z>=WZ)return 0; return world[idx(x,y,z)]; }
 function set(x,y,z,v){ if(x<0||x>=WX||y<0||y>=WY||z<0||z>=WZ)return; world[idx(x,y,z)]=v; }
-function heightAt(x,z){ var cx=x-WX/2,cz=z-WZ/2; if(Math.abs(cx)<SAFE&&Math.abs(cz)<SAFE)return 0;
-  var s1=Math.sin(x*0.12)*Math.cos(z*0.12)*1.6; var s2=Math.sin(x*0.05+1.0)*Math.cos(z*0.06+0.4)*2.6; var s3=Math.sin(x*0.22+2.1)*0.8; return Math.max(0,Math.round(s1+s2+s3)); }
-function buildWorld(){ for(var x=0;x<WX;x++)for(var z=0;z<WZ;z++){ var h=heightAt(x,z),top=10+h;
-  var cx=x-WX/2,cz=z-WZ/2,safe=(Math.abs(cx)<SAFE&&Math.abs(cz)<SAFE);
-  set(x,0,z,4); for(var y=1;y<=7;y++)set(x,y,z,3); set(x,8,z,2); set(x,9,z,2);
-  if(safe){ set(x,10,z,5); } else { set(x,top,z,1); for(var fy=10;fy<top;fy++)set(x,fy,z,2); } } }
+// Magma zone: top-right quadrant corner of map
+function isMagmaZone(x,z){
+  var cx=x-WX/2, cz=z-WZ/2;
+  return (cx>40&&cz>40&&Math.sqrt((cx-55)*(cx-55)+(cz-55)*(cz-55))<25);
+}
+function heightAt(x,z){
+  var cx=x-WX/2, cz=z-WZ/2;
+  if(Math.abs(cx)<SAFE&&Math.abs(cz)<SAFE) return 0;
+  // richer multi-octave noise for varied hills
+  var s1=Math.sin(x*0.08)*Math.cos(z*0.08)*3.5;
+  var s2=Math.sin(x*0.04+1.2)*Math.cos(z*0.05+0.6)*5.0;
+  var s3=Math.sin(x*0.18+2.4)*Math.cos(z*0.15+1.1)*1.8;
+  var s4=Math.sin(x*0.30+0.7)*Math.cos(z*0.28+2.3)*1.0;
+  var s5=Math.sin((x+z)*0.06+0.3)*2.2;
+  return Math.max(0,Math.round(s1+s2+s3+s4+s5));
+}
+function buildWorld(){
+  for(var x=0;x<WX;x++) for(var z=0;z<WZ;z++){
+    var h=heightAt(x,z), top=10+h;
+    var cx=x-WX/2, cz=z-WZ/2;
+    var safe=(Math.abs(cx)<SAFE&&Math.abs(cz)<SAFE);
+    var magma=isMagmaZone(x,z);
+    set(x,0,z,4);
+    for(var y=1;y<=7;y++) set(x,y,z,3);
+    set(x,8,z,2); set(x,9,z,2);
+    if(safe){ set(x,10,z,5); }
+    else if(magma){ set(x,10,z,7); } // magma surface (block type 7)
+    else { set(x,top,z,1); for(var fy=10;fy<top;fy++) set(x,fy,z,2); }
+  }
+}
 buildWorld();
 
 // ─── Mesh builder ────────────────────────────────────────────────────────────
-function tileFor(b,face){ if(b===1)return face===0?0:(face===2?2:1); if(b===2)return 2; if(b===3)return 3; if(b===4)return 4; if(b===5)return 5; return 3; }
+function tileFor(b,face){ if(b===1)return face===0?0:(face===2?2:1); if(b===2)return 2; if(b===3)return 3; if(b===4)return 4; if(b===5)return 5; if(b===6)return 6; if(b===7)return 7; return 3; }
 var FACES=[
   {n:[0,1,0],t:0,v:[[0,1,0],[0,1,1],[1,1,1],[1,1,0]]},
   {n:[0,-1,0],t:2,v:[[0,0,1],[0,0,0],[1,0,0],[1,0,1]]},
@@ -637,7 +672,7 @@ function clearKeys(){ for(var k in keys) keys[k]=false; player.mining=false; pla
 document.addEventListener('keydown',function(e){ if(!running)return; keys[e.code]=true;
   if(pauseMenuOpen) return; // block all game keys while pause menu open
   if(e.code==='KeyK')toggleKit(); if(e.code==='KeyH')toggleHelp(); if(e.code==='KeyE')eatSteak();
-  if(e.code.indexOf('Digit')===0){ var n=parseInt(e.code.slice(5))-1; if(n>=0&&n<5){player.slot=n;updateHotbar();} }
+  if(e.code.indexOf('Digit')===0){ var n=parseInt(e.code.slice(5))-1; if(n>=0&&n<6){player.slot=n;updateHotbar();} }
   if(e.code==='ControlLeft'||e.code==='ControlRight'){ sprintOn=!sprintOn; e.preventDefault(); }
   if(['Space','KeyW','KeyA','KeyS','KeyD','ShiftLeft'].indexOf(e.code)>=0)e.preventDefault(); });
 document.addEventListener('keyup',function(e){ keys[e.code]=false; });
@@ -696,14 +731,23 @@ glCanvas.addEventListener('mousedown',function(e){
   var it=curItem();
   if(e.button===0){
     if(it==='bow'){ player.bowCharging=true; player.bowCharge=0; }
-    else { player.mining=true; attack(); }
+    else {
+      // always try to attack immediately on click
+      attack();
+      // only start mining after holding for 1 second
+      if(desktopMineTimer) clearTimeout(desktopMineTimer);
+      desktopMineTimer = setTimeout(function(){
+        if(locked && !panelOpen() && !player.dead) player.mining=true;
+      }, 1000);
+    }
   }
   if(e.button===2){ player.using=true; use(); }
   e.preventDefault();
 });
 
+var desktopMineTimer=null;
 document.addEventListener('mouseup',function(e){
-  if(e.button===0){ player.mining=false; if(player.bowCharging){fireBow();player.bowCharging=false;} }
+  if(e.button===0){ player.mining=false; if(desktopMineTimer){clearTimeout(desktopMineTimer);desktopMineTimer=null;} if(player.bowCharging){fireBow();player.bowCharging=false;} }
   if(e.button===2){ player.using=false; }
   if(useDragFallback) dragLook=false;
 });
@@ -761,7 +805,7 @@ function leaveToMenu(){
 document.getElementById('pause-resume').onclick=function(){ closePauseMenu(); };
 document.getElementById('pause-leave').onclick=function(){ leaveToMenu(); };
 
-document.addEventListener('wheel',function(e){ if(!running||panelOpen()||pauseMenuOpen)return; player.slot=(player.slot+(e.deltaY>0?1:-1)+5)%5; updateHotbar(); e.preventDefault(); },{passive:false});
+document.addEventListener('wheel',function(e){ if(!running||panelOpen()||pauseMenuOpen)return; player.slot=(player.slot+(e.deltaY>0?1:-1)+6)%6; updateHotbar(); e.preventDefault(); },{passive:false});
 
 // ─── Panels ──────────────────────────────────────────────────────────────────
 var kitOpen=false, helpOpen=false;
@@ -778,8 +822,8 @@ document.getElementById('pick-demo').onclick=function(){setKit('demo');toggleKit
 
 // ─── Kits ────────────────────────────────────────────────────────────────────
 function setKit(k){ player.kit=k; player.inv=[]; player.totems=0;
-  if(k==='fighter'){ player.inv=[{t:'sword',c:1},{t:'axe',c:1},{t:'shield',c:1},{t:'totem',c:1},{t:'steak',c:32}]; player.totems=1; document.getElementById('kit-indicator').textContent='⚔ Fighter'; }
-  else { player.inv=[{t:'bow',c:1},{t:'tnt',c:999},{t:'totem',c:2},{t:'steak',c:32}]; player.totems=2; document.getElementById('kit-indicator').textContent='💣 Demolitionist'; }
+  if(k==='fighter'){ player.inv=[{t:'sword',c:1},{t:'axe',c:1},{t:'shield',c:1},{t:'totem',c:1},{t:'block',c:16},{t:'steak',c:32}]; player.totems=1; document.getElementById('kit-indicator').textContent='⚔ Fighter'; }
+  else { player.inv=[{t:'bow',c:1},{t:'tnt',c:999},{t:'axe',c:1},{t:'totem',c:2},{t:'block',c:16},{t:'steak',c:32}]; player.totems=2; document.getElementById('kit-indicator').textContent='💣 Demolitionist'; }
   player.slot=0; updateHotbar(); msg((k==='fighter'?'⚔ Fighter':'💣 Demolitionist')+' equipped!'); }
 function curItem(){ var s=player.inv[player.slot]; return s?s.t:null; }
 function hasSteak(){ for(var i=0;i<player.inv.length;i++)if(player.inv[i].t==='steak'&&player.inv[i].c>0)return player.inv[i]; return null; }
@@ -856,8 +900,8 @@ function rayPlace(maxD){ var f=lookVec(),ox=player.x,oy=player.y+EYE,oz=player.z
     if(get(bx,by,bz)!==0){ return {x:px,y:py,z:pz}; }
     px=bx;py=by;pz=bz; }
   return null; }
-function hardness(b){ if(b===4||b===5)return Infinity; if(b===3)return 1.6; if(b===1)return 0.7; if(b===2)return 0.6; return 0.8; }
-function isUnbreakable(b){ return b===4||b===5; }
+function hardness(b){ if(b===4||b===5||b===7)return Infinity; if(b===3)return 1.6; if(b===1)return 0.7; if(b===2)return 0.6; if(b===6)return 1.0; return 0.8; }
+function isUnbreakable(b){ return b===4||b===5||b===7; }
 function mineUpdate(dt){
   if(player.dead||panelOpen()||!player.mining||curItem()==='bow'){ player.mineProg=0; player.mineKey=''; crackMesh.visible=false; return; }
   var hit=rayBlock(5);
@@ -945,10 +989,30 @@ function use(){ if(panelOpen()||player.dead)return; var it=curItem(); if(!it)ret
     msg('TNT cart placed — ignite with the flame bow!'); return; }
   if(it==='totem'){msg('Totem auto-activates in offhand on a lethal hit.');return;}
   if(it==='shield'){msg('Hold Shift to raise the shield.');return;}
-  var hit=rayBlock(5); if(hit){ var px2=hit.x+hit.nx,py2=hit.y+hit.ny,pz2=hit.z+hit.nz;
-    var cxz=px2-WX/2, czz=pz2-WZ/2;
-    if(Math.abs(cxz)<SAFE&&Math.abs(czz)<SAFE){ msg('🟢 Cannot build in the safe zone!'); return; }
-    if(get(px2,py2,pz2)===0){set(px2,py2,pz2,3);markDirty();safePublish('blockplace',{x:px2,y:py2,z:pz2,b:3});} } }
+  if(it==='block'){
+    var bslot=player.inv[player.slot]; if(!bslot||bslot.c<=0){msg('No blocks left!');return;}
+    // use rayBlock to find the face to place on; fall back to in-front-of-player
+    var bHit=rayBlock(6);
+    var bx,by,bz;
+    if(bHit){ bx=bHit.x+bHit.nx; by=bHit.y+bHit.ny; bz=bHit.z+bHit.nz; }
+    else { var bfwd=lookVec(); bx=Math.floor(player.x+bfwd.x*2); by=Math.floor(player.y); bz=Math.floor(player.z+bfwd.z*2); }
+    // safe zone check
+    if(Math.abs(bx+0.5-WX/2)<SAFE&&Math.abs(bz+0.5-WZ/2)<SAFE){ msg('🟢 Cannot build in the safe zone!'); return; }
+    // already occupied
+    if(get(bx,by,bz)!==0){ return; }
+    // can't place inside own hitbox
+    var bOwnBlock=(Math.abs(player.x-(bx+0.5))<PR+0.5&&Math.abs(player.z-(bz+0.5))<PR+0.5&&(by===Math.floor(player.y)||by===Math.floor(player.y+1)));
+    if(bOwnBlock){ msg("Can't place there — move first!"); return; }
+    // can't place inside remote players
+    var bRpBlock=false;
+    Object.keys(remotePlayers).forEach(function(rid){ var rp=remotePlayers[rid]; if(rp.dead)return;
+      if(Math.abs(rp.x-(bx+0.5))<0.6&&Math.abs(rp.z-(bz+0.5))<0.6&&(by===Math.floor(rp.y)||by===Math.floor(rp.y+1))) bRpBlock=true; });
+    if(bRpBlock){ msg("Can't place on a player!"); return; }
+    set(bx,by,bz,6); markDirty();
+    safePublish('blockplace',{x:bx,y:by,z:bz,b:6});
+    bslot.c--; updateHotbar();
+    return; }
+} // end use()
 
 function fireBow(){ var charge=Math.min(player.bowCharge,1),sp=10+charge*22,fwd=lookVec();
   var ox=player.x, oy=player.y+EYE, oz=player.z;
@@ -1009,7 +1073,7 @@ function updateHearts(){ var hc=document.getElementById('hearts'); hc.innerHTML=
   for(var k=0;k<10;k++){ hn.appendChild(foodIcon(Math.max(0,Math.min(1,player.hunger/2-k)))); }
   document.getElementById('shield-indicator').style.display=(player.shield&&player.shieldDis<=0)?'block':'none'; }
 function updateHotbar(){ var hb=document.getElementById('hotbar'); hb.innerHTML='';
-  for(var i=0;i<5;i++){ var d=document.createElement('div'); d.className='slot'+(i===player.slot?' active':''); var it=player.inv[i];
+  for(var i=0;i<6;i++){ var d=document.createElement('div'); d.className='slot'+(i===player.slot?' active':''); var it=player.inv[i];
     d.setAttribute('data-slot',i);
     (function(si,el){ el.addEventListener('click',function(){ player.slot=si; updateHotbar(); });
       el.addEventListener('touchstart',function(e){ player.slot=si; updateHotbar(); e.preventDefault(); e.stopPropagation(); },{passive:false}); })(i,d);
@@ -1032,7 +1096,8 @@ function drawIcon(c,t){ c.clearRect(0,0,32,32); if(hasCustom(t)){ drawCustom(c,t
   else if(t==='steak'){ c.fillStyle='#4a2c12';c.fillRect(5,5,22,22); c.fillStyle='#6e431d';c.fillRect(7,7,18,18); c.fillStyle='#8a5a2a';c.fillRect(9,9,14,14); c.fillStyle='#a06d34';c.fillRect(11,10,6,5);c.fillRect(16,15,5,5); c.fillStyle='#c89a5a';c.fillRect(12,11,3,2); }
   else if(t==='bow'){ c.fillStyle='#8B4513'; for(var i=0;i<11;i++){var x=8+Math.abs(i-5)*1.4;c.fillRect(Math.round(x),3+i*2,3,3);} c.fillStyle='#ddd';c.fillRect(15,4,2,22); c.fillStyle='#c00';c.fillRect(17,13,6,5); }
   else if(t==='arrow'){ c.fillStyle='#999';c.fillRect(4,14,18,4); c.fillStyle='#c00';c.fillRect(22,11,6,9); c.fillStyle='#8B4513';c.fillRect(2,15,5,2); }
-  else if(t==='tnt'){ c.fillStyle='#cc2200';c.fillRect(6,5,20,13); c.fillStyle='#fff';c.fillRect(6,9,20,3);c.fillRect(6,15,20,3); c.fillStyle='#888';c.fillRect(3,18,26,8); c.fillStyle='#555';c.fillRect(13,1,4,5); } }
+  else if(t==='tnt'){ c.fillStyle='#cc2200';c.fillRect(6,5,20,13); c.fillStyle='#fff';c.fillRect(6,9,20,3);c.fillRect(6,15,20,3); c.fillStyle='#888';c.fillRect(3,18,26,8); c.fillStyle='#555';c.fillRect(13,1,4,5); }
+  else if(t==='block'){ c.fillStyle='#b0521e';c.fillRect(3,3,26,26); c.fillStyle='#7a3510';c.fillRect(3,3,26,1);c.fillRect(3,3,1,26);c.fillRect(3,12,26,1);c.fillRect(15,3,1,10);c.fillRect(3,20,26,1);c.fillRect(9,20,1,9); c.fillStyle='#d06530';c.fillRect(5,5,9,6);c.fillRect(16,5,10,6);c.fillRect(5,13,11,6);c.fillRect(17,13,9,6); } }
 
 function drawArm(c,sleeve){ sleeve=sleeve||'#3a5ab0';
   c.fillStyle=sleeve; c.fillRect(-10,8,20,40);
@@ -1088,7 +1153,7 @@ function drawIconBig(c,t){ if(hasCustom(t)){ c.save(); c.translate(-4,-4); drawC
   else if(t==='bow'){ c.fillStyle='#8B4513'; for(var i=0;i<12;i++){var x=8+Math.abs(i-5.5)*1.7;c.fillRect(Math.round(x),i*4,4,5);} c.fillStyle='#ddd';c.fillRect(18,0,2,44); c.fillStyle='#888';c.fillRect(4,20,14,2); c.fillStyle='#c00';c.fillRect(18,18,6,6); }
   else if(t==='steak'){ c.fillStyle='#4a2c12';c.fillRect(4,4,24,24); c.fillStyle='#6e431d';c.fillRect(6,6,20,20); c.fillStyle='#8a5a2a';c.fillRect(8,8,16,16); c.fillStyle='#a06d34';c.fillRect(9,9,7,5);c.fillRect(16,13,7,5); c.fillStyle='#c89a5a';c.fillRect(10,10,3,2); }
   else if(t==='tnt'){ c.fillStyle='#cc2200';c.fillRect(4,4,24,18); c.fillStyle='#fff';c.fillRect(4,9,24,3);c.fillRect(4,16,24,3); c.fillStyle='#888';c.fillRect(2,22,28,12); c.fillStyle='#555';c.fillRect(14,0,4,6); }
-  else drawIcon(c,t); }
+  else if(t==='block'){ c.fillStyle='#b0521e';c.fillRect(2,2,28,28); c.fillStyle='#7a3510';c.fillRect(2,2,28,2);c.fillRect(2,2,2,28);c.fillRect(2,14,28,2);c.fillRect(16,2,2,12);c.fillRect(2,22,28,2);c.fillRect(10,22,2,8); c.fillStyle='#d06530';c.fillRect(4,4,10,8);c.fillRect(18,4,10,8);c.fillRect(4,16,12,4);c.fillRect(18,16,10,4); } else drawIcon(c,t); }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
 var msgTimer=0;
@@ -1112,7 +1177,7 @@ function drawDamageNumbers(dt){ for(var i=dmgNums.length-1;i>=0;i--){ var n=dmgN
 // ─── Physics update ───────────────────────────────────────────────────────────
 var GRAV=22, JUMP=8, SPEED=4.4, CROUCH=2.2, SPRINT=6.8;
 var sprintOn=false; // toggled by Ctrl or mobile button
-var hungerAcc=0, regenAcc=0, goldAcc=0, safeHeal=0;
+var hungerAcc=0, regenAcc=0, goldAcc=0, safeHeal=0, magmaAcc=0;
 function update(dt){ if(player.dead)return;
   var crouch=!!keys['ShiftLeft']; player.shield=crouch&&player.kit==='fighter'&&player.shieldDis<=0;
   if(crouch) sprintOn=false; // crouching cancels sprint
@@ -1140,6 +1205,9 @@ function update(dt){ if(player.dead)return;
   regenAcc+=dt; if(regenAcc>3){regenAcc=0;if(player.hunger>=18&&player.hp<20&&!player.inSafe){player.hp=Math.min(20,player.hp+1);updateHearts();}}
   if(player.golden>0){goldAcc+=dt; if(goldAcc>5){goldAcc=0;player.golden--;updateHearts();}}
   if(player.inSafe&&player.hp<20){safeHeal+=dt; if(safeHeal>1){safeHeal=0;player.hp=Math.min(20,player.hp+1);updateHearts();}}
+  // Magma damage: standing on block type 7
+  var feetBlock=get(Math.floor(player.x),Math.floor(player.y-0.1),Math.floor(player.z));
+  if(feetBlock===7){ magmaAcc+=dt; if(magmaAcc>=1){ magmaAcc=0; damage(1,null,'Magma'); msg('🔥 Magma!'); } } else { magmaAcc=0; }
   // publish state to Ably
   statePublishAcc += dt;
   if(statePublishAcc >= STATE_HZ){ statePublishAcc = 0; publishState(); } }
@@ -1154,7 +1222,7 @@ function updateArrows(dt){ for(var i=arrows.length-1;i>=0;i--){ var a=arrows[i];
   if(!rm && a.remote){
     var pdx=ax2-player.x, pdy=ay-(player.y+EYE*0.6), pdz=az-player.z;
     if(Math.sqrt(pdx*pdx+pdy*pdy+pdz*pdz)<0.8){
-      var ch2=a.charge||1; var admg2=Math.max(1,Math.round(4*ch2));
+      var ch2=a.charge||1; var admg2=Math.max(1,Math.round(5*ch2));
       spawnHitFX(player.x,player.y+1.1,player.z,false);
       damageNumber(player.x,player.y+2.0,player.z,admg2,false);
       damage(admg2,a.ownerId,'Bow'); rm=true;
@@ -1166,7 +1234,7 @@ function updateArrows(dt){ for(var i=arrows.length-1;i>=0;i--){ var a=arrows[i];
       if(rm) return; var rp=remotePlayers[rid]; if(rp.dead) return;
       var rdx=ax2-rp.x, rdy=ay-(rp.y+1.0), rdz=az-rp.z;
       if(Math.sqrt(rdx*rdx+rdy*rdy+rdz*rdz)<0.8){
-        var ch3=a.charge||1; var admg3=Math.max(1,Math.round(4*ch3));
+        var ch3=a.charge||1; var admg3=Math.max(1,Math.round(5*ch3));
         spawnHitFX(rp.x,rp.y+1.1,rp.z,false); damageNumber(rp.x,rp.y+2.0,rp.z,admg3,false);
         msg('🏹 Hit '+rp.name+' for '+admg3); rm=true;
         // damage is applied on the receiver's side via the arrow message they already received
@@ -1175,7 +1243,7 @@ function updateArrows(dt){ for(var i=arrows.length-1;i>=0;i--){ var a=arrows[i];
   }
   // local arrow hits AI dummies
   if(!rm && !a.remote) for(var k=0;k<dummies.length;k++){var d=dummies[k];if(d.dead)continue; if(Math.abs(ax2-d.x)<0.7&&Math.abs(ay-(d.y+1))<1.1&&Math.abs(az-d.z)<0.7){
-    var ch=(a.charge!==undefined?a.charge:1); var admg=Math.max(1,Math.round(4*ch));
+    var ch=(a.charge!==undefined?a.charge:1); var admg=Math.max(1,Math.round(5*ch));
     d.hp-=admg; d.flash=0.18;
     var kb=5.5*0.5*ch; d.kx=(a.dx||0)*kb; d.kz=(a.dz||0)*kb; d.ky=2.5*ch;
     spawnHitFX(d.x,d.y+1.1,d.z,false); damageNumber(d.x,d.y+2.0,d.z,admg,false);
@@ -1277,7 +1345,7 @@ glCanvas.addEventListener('touchstart',function(e){ for(var i=0;i<e.changedTouch
     var it=curItem();
     if(it==='bow'){ player.bowCharging=true; player.bowCharge=0; }
     else if(it==='steak'){ player.using=true; }
-    else { touchHoldTimer=setTimeout(function(){ if(lookId!==null&&curItem()!=='tnt'){player.mining=true;attack();}},200); }
+    else { touchHoldTimer=setTimeout(function(){ if(lookId!==null&&curItem()!=='tnt'&&curItem()!=='block'){player.mining=true;}},1000); attack(); } // attack on tap, mine on 1s hold
   }} },{passive:true});
 glCanvas.addEventListener('touchmove',function(e){ for(var i=0;i<e.changedTouches.length;i++){var t=e.changedTouches[i];
   if(t.identifier===lookId){ var ddx=t.clientX-lx,ddy=t.clientY-ly; if(Math.abs(ddx)+Math.abs(ddy)>6)touchMoved=true;
@@ -1287,7 +1355,7 @@ glCanvas.addEventListener('touchend',function(e){ for(var i=0;i<e.changedTouches
     var it=curItem();
     if(it==='bow'){ if(player.bowCharging){fireBow();player.bowCharging=false;} }
     else if(it==='steak'){ player.using=false; }
-    else if(!touchMoved&&held<260&&!player.mining){ if(it==='tnt')use(); else attack(); }
+    else if(!touchMoved&&held<1100&&!player.mining){ if(it==='tnt'||it==='block')use(); else attack(); }
     player.mining=false; player.using=false; lookId=null;
   }} });
 glCanvas.addEventListener('touchcancel',function(){ player.mining=false;player.using=false;player.bowCharging=false;lookId=null; if(touchHoldTimer){clearTimeout(touchHoldTimer);touchHoldTimer=null;} });
